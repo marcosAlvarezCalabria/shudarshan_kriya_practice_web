@@ -1,66 +1,133 @@
 "use client";
 
-import { OrbSegment } from "@/domain/sessionTemplate";
+import { SessionStatus } from "@/application/sessionReducer";
 import { usePrefersReducedMotion } from "@/hooks/usePrefersReducedMotion";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+export type BreathPhase = "inhale" | "hold" | "exhale";
+
 type OrbProps = {
-  pattern: OrbSegment[];
-  phaseProgress: number;
-  isRunning: boolean;
+  status: SessionStatus;
 };
 
-const getScaleFromPattern = (pattern: OrbSegment[], elapsedMs: number) => {
-  const total = pattern.reduce((sum, seg) => sum + seg.ms, 0);
-  if (total <= 0) return 1;
-  let cursor = elapsedMs % total;
+type PhaseConfig = {
+  phase: BreathPhase;
+  durationMs: number;
+};
 
-  for (const seg of pattern) {
-    if (cursor <= seg.ms) {
-      const t = seg.ms === 0 ? 1 : cursor / seg.ms;
-      if (seg.kind === "expand") return 1 + 0.25 * t;
-      if (seg.kind === "hold") return 1.25;
-      if (seg.kind === "contract") return 1.25 - 0.25 * t;
-      return 1;
+const BREATH_CYCLE: PhaseConfig[] = [
+  { phase: "inhale", durationMs: 4000 },
+  { phase: "hold", durationMs: 4000 },
+  { phase: "exhale", durationMs: 6000 },
+];
+
+const TOTAL_CYCLE_MS = BREATH_CYCLE.reduce((total, segment) => total + segment.durationMs, 0);
+
+const easeInOutSine = (t: number) => -(Math.cos(Math.PI * t) - 1) / 2;
+
+const getBreathingFrame = (elapsedMs: number) => {
+  const cyclePositionMs = elapsedMs % TOTAL_CYCLE_MS;
+  let cursor = cyclePositionMs;
+
+  for (const segment of BREATH_CYCLE) {
+    if (cursor < segment.durationMs) {
+      const progress = segment.durationMs === 0 ? 1 : cursor / segment.durationMs;
+      const secondsInPhase = Math.floor(cursor / 1000) + 1;
+      const phaseSeconds = Math.max(1, Math.ceil(segment.durationMs / 1000));
+      const counter = Math.min(secondsInPhase, phaseSeconds);
+
+      if (segment.phase === "inhale") {
+        return {
+          phase: segment.phase,
+          counter,
+          scale: 1 + 0.4 * easeInOutSine(progress),
+        };
+      }
+
+      if (segment.phase === "hold") {
+        return {
+          phase: segment.phase,
+          counter,
+          scale: 1.4,
+        };
+      }
+
+      return {
+        phase: segment.phase,
+        counter,
+        scale: 1.4 - 0.4 * easeInOutSine(progress),
+      };
     }
-    cursor -= seg.ms;
+
+    cursor -= segment.durationMs;
   }
 
-  return 1;
+  return { phase: "inhale" as BreathPhase, counter: 1, scale: 1 };
 };
 
-export const Orb = ({ pattern, phaseProgress, isRunning }: OrbProps) => {
+const getPhaseLabel = (phase: BreathPhase) => {
+  if (phase === "inhale") return "Inhale";
+  if (phase === "hold") return "Hold";
+  return "Exhale";
+};
+
+export const Orb = ({ status }: OrbProps) => {
   const reducedMotion = usePrefersReducedMotion();
   const rafRef = useRef<number>();
-  const [scale, setScale] = useState(1);
-  const patternSafe = useMemo(() => (pattern.length ? pattern : [{ kind: "idle", ms: 2000 }]), [pattern]);
+  const runStartRef = useRef<number | null>(null);
+  const accumulatedElapsedRef = useRef(0);
+
+  const initialFrame = useMemo(() => getBreathingFrame(0), []);
+  const [frame, setFrame] = useState(initialFrame);
 
   useEffect(() => {
-    if (reducedMotion || !isRunning) {
-      setScale(1);
+    if (status === "idle" || status === "completed") {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      runStartRef.current = null;
+      accumulatedElapsedRef.current = 0;
+      setFrame(getBreathingFrame(0));
       return;
     }
 
-    const startAt = performance.now() - phaseProgress * patternSafe.reduce((sum, s) => sum + s.ms, 0);
+    if (status === "paused") {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      if (runStartRef.current !== null) {
+        accumulatedElapsedRef.current += performance.now() - runStartRef.current;
+      }
+      runStartRef.current = null;
+      return;
+    }
+
+    if (reducedMotion) {
+      setFrame(getBreathingFrame(accumulatedElapsedRef.current));
+      return;
+    }
+
+    runStartRef.current = performance.now();
 
     const animate = (now: number) => {
-      setScale(getScaleFromPattern(patternSafe, now - startAt));
+      const start = runStartRef.current ?? now;
+      const elapsedMs = accumulatedElapsedRef.current + (now - start);
+      setFrame(getBreathingFrame(elapsedMs));
       rafRef.current = requestAnimationFrame(animate);
     };
 
     rafRef.current = requestAnimationFrame(animate);
+
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
-  }, [isRunning, patternSafe, phaseProgress, reducedMotion]);
+  }, [status, reducedMotion]);
 
   return (
-    <div className="relative flex h-64 w-64 items-center justify-center md:h-80 md:w-80">
+    <div className="relative flex h-64 w-64 flex-col items-center justify-center md:h-80 md:w-80">
       <div
-        className="h-full w-full rounded-full bg-gradient-to-br from-sky-300/70 to-indigo-500/60 shadow-[0_0_65px_rgba(124,198,254,0.55)] transition-transform duration-150"
-        style={{ transform: `scale(${scale})` }}
-        aria-hidden
-      />
+        className="flex h-full w-full items-center justify-center rounded-full bg-gradient-to-br from-sky-300/70 to-indigo-500/60 shadow-[0_0_65px_rgba(124,198,254,0.55)]"
+        style={{ transform: `scale(${frame.scale})` }}
+      >
+        <span className="text-5xl font-semibold tabular-nums text-slate-950">{frame.counter}</span>
+      </div>
+      <p className="mt-4 text-sm font-medium text-slate-200">{getPhaseLabel(frame.phase)}</p>
     </div>
   );
 };

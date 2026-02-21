@@ -28,10 +28,6 @@ export default function HomePage() {
     () => template.phases.reduce((sum, phase) => sum + phase.durationMs, 0),
     [template],
   );
-  const phaseProgress = currentPhase
-    ? 1 - state.phaseRemainingMs / Math.max(1, currentPhase.durationMs)
-    : 1;
-
   useEffect(() => {
     setStats(getStats());
   }, []);
@@ -131,11 +127,7 @@ export default function HomePage() {
         <div className="flex flex-col items-center gap-3">
           <p className="text-sm text-slate-300">{currentPhase?.label ?? "Completed"}</p>
           {currentPhase?.meta?.round ? <p className="text-xs text-slate-400">Round {currentPhase.meta.round}</p> : null}
-          <Orb
-            pattern={currentPhase?.orbPattern ?? [{ kind: "idle", ms: 2000 }]}
-            phaseProgress={phaseProgress}
-            isRunning={state.status === "running"}
-          />
+          <Orb status={state.status} />
           <p className="text-4xl font-semibold tabular-nums">{formatMs(state.phaseRemainingMs)}</p>
           <div className="h-2 w-full overflow-hidden rounded-full bg-slate-700">
             <div
